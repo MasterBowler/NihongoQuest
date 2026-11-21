@@ -1,0 +1,13 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Downloaded source datasets (re-fetch with tools/fetch_sources.py)
+data/raw/
+
+# Per-user state: SRS progress, settings, cached audio
+userdata/
+
+# Dev scratch
+scratch/
