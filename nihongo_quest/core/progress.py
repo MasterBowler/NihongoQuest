@@ -96,6 +96,8 @@ DEFAULTS: dict = {
     "ui_scale": 1.0,                    # whole-app zoom, 0.85 .. 1.75
     "loupe_factor": 2.25,                # magnifier zoom loop strength
     "auto_translate_ocr": True,         # fetch EN gloss after OCR when online
+    "detail_ro_glosses": False,         # show EN→RO glosses under JA meanings in 詳細
+    "rail_mode": "ja",                  # ja = lexicon detail | en_ro = English→Romanian rail
     "ffmpeg_path": "",                  # optional path to ffmpeg.exe or its folder
     "lmstudio_enabled": False,          # use LM Studio for Immersion EN drafts
     "lmstudio_url": "http://127.0.0.1:1234/v1",

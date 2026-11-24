@@ -9,5 +9,8 @@ data/raw/
 # Per-user state: SRS progress, settings, cached audio
 userdata/
 
-# Dev scratch
+# Dev scratch / release build output
 scratch/
+build/
+dist/
+*.spec.bak

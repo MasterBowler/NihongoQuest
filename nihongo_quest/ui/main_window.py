@@ -22,6 +22,7 @@ from nihongo_quest.ui.panes.study import StudyPane
 from nihongo_quest.ui.services import AppServices
 from nihongo_quest.ui.theme import stylesheet
 from nihongo_quest.ui.widgets.detail import DetailPane
+from nihongo_quest.ui.widgets.en_ro_pane import EnRoPane
 from nihongo_quest.ui.widgets.loupe import MagnifierLoupe
 from nihongo_quest.ui.widgets.petals import PetalField
 
@@ -177,15 +178,53 @@ class MainWindow(QMainWindow):
         self.stack.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.splitter.addWidget(self.stack)
 
-        self.detail = DetailPane(self.svc)
-        self.detail.setMinimumWidth(280)
-        self.splitter.addWidget(self.detail)
+        self.rail = self._build_rail()
+        self.splitter.addWidget(self.rail)
 
         self.splitter.setStretchFactor(0, 0)
         self.splitter.setStretchFactor(1, 1)
         self.splitter.setStretchFactor(2, 0)
         self.splitter.setSizes([160, 1100, 380])
         return self.splitter
+
+    def _build_rail(self) -> QWidget:
+        """Right context rail: 詳細 (JA lexicon) or EN→RO (English immersion helper)."""
+        rail = QWidget()
+        rail.setObjectName("ContextRail")
+        rail.setMinimumWidth(280)
+        lay = QVBoxLayout(rail)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
+
+        switch = QHBoxLayout()
+        switch.setContentsMargins(10, 10, 10, 4)
+        switch.setSpacing(6)
+        self.rail_ja_btn = QPushButton("詳 細")
+        self.rail_en_btn = QPushButton("EN→RO")
+        for btn, mode in ((self.rail_ja_btn, "ja"), (self.rail_en_btn, "en_ro")):
+            btn.setCheckable(True)
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.clicked.connect(lambda _=False, m=mode: self.svc.set_rail_mode(m))
+            switch.addWidget(btn)
+        switch.addStretch(1)
+        lay.addLayout(switch)
+
+        self.rail_stack = QStackedWidget()
+        self.detail = DetailPane(self.svc)
+        self.en_ro = EnRoPane(self.svc)
+        self.rail_stack.addWidget(self.detail)
+        self.rail_stack.addWidget(self.en_ro)
+        lay.addWidget(self.rail_stack, 1)
+
+        self.svc.rail_mode_changed.connect(self._on_rail_mode)
+        self._on_rail_mode(self.svc.rail_mode())
+        return rail
+
+    def _on_rail_mode(self, mode: str) -> None:
+        en = mode == "en_ro"
+        self.rail_ja_btn.setChecked(not en)
+        self.rail_en_btn.setChecked(en)
+        self.rail_stack.setCurrentWidget(self.en_ro if en else self.detail)
 
     def _add(self, key: str, widget: QWidget) -> None:
         widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -257,8 +296,12 @@ class MainWindow(QMainWindow):
             show = self._study_wants_detail
         else:
             show = self._page in DETAIL_PAGES
-        was = self.detail.isVisible()
-        self.detail.setVisible(show)
+        was = self.rail.isVisible()
+        self.rail.setVisible(show)
+        # EN→RO rail is mainly for Immersion English softsubs.
+        self.rail_en_btn.setVisible(self._page == "immersion")
+        if self._page != "immersion" and self.svc.rail_mode() == "en_ro":
+            self.svc.set_rail_mode("ja")
         if show and not was:
             sizes = self.splitter.sizes()
             total = sum(sizes) or 1

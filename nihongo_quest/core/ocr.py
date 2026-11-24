@@ -231,6 +231,44 @@ def ocr_capture(image: QImage, language: str = "ja") -> OcrResult:
         path.unlink(missing_ok=True)
 
 
+def join_page_lines(lines: list[OcrLine]) -> str:
+    """Top-to-bottom page text (manga / document), not a single subtitle line."""
+    usable = [ln for ln in lines if (ln.text or "").strip()]
+    usable.sort(key=lambda ln: (ln.y, -ln.height))
+    return "\n".join(ln.text.strip() for ln in usable if ln.text.strip())
+
+
+def preprocess_page(image: QImage, *, scale: float = 2.0) -> QImage:
+    """Upscale a page for OCR without subtitle white-mask assumptions."""
+    if image.isNull() or scale == 1.0:
+        return image
+    w = max(1, int(image.width() * scale))
+    h = max(1, int(image.height() * scale))
+    return image.scaled(w, h, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+
+
+def ocr_page(image: QImage, language: str = "ja") -> OcrResult:
+    """OCR a manga/document page — keep all lines, not just the tallest."""
+    if image.isNull():
+        raise OcrError("Empty image")
+    prepared = preprocess_page(image, scale=2.0)
+    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+        path = Path(tmp.name)
+    try:
+        if not prepared.save(str(path), "PNG"):
+            raise OcrError("Could not encode image as PNG")
+        lines = _ocr_path(path, language)
+        text = join_page_lines(lines)
+        if not text:
+            if not image.save(str(path), "PNG"):
+                raise OcrError("Could not encode image as PNG")
+            lines = _ocr_path(path, language)
+            text = join_page_lines(lines)
+        return OcrResult(text=text, reading="", lines=lines, note="page")
+    finally:
+        path.unlink(missing_ok=True)
+
+
 def ocr_file(path: Path | str, language: str = "ja") -> str:
     image = QImage(str(path))
     if image.isNull():
@@ -252,19 +290,6 @@ def translate_ja_to_en(text: str, timeout: float = 8.0) -> str:
 
     Machine glosses will not match polished video subtitles — treat as a draft.
     """
-    text = (text or "").strip()
-    if not text:
-        return ""
-    try:
-        import json
-        import urllib.parse
-        import urllib.request
+    from nihongo_quest.core.translate import translate_ja_to_en as _tr
 
-        q = urllib.parse.urlencode({"q": text[:450], "langpair": "ja|en"})
-        url = f"https://api.mymemory.translated.net/get?{q}"
-        with urllib.request.urlopen(url, timeout=timeout) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-        out = (data.get("responseData") or {}).get("translatedText") or ""
-        return "" if out.strip() == text.strip() else out.strip()
-    except Exception:  # noqa: BLE001
-        return ""
+    return _tr(text, timeout=timeout)

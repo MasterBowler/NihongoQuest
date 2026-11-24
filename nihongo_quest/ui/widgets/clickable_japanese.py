@@ -37,7 +37,7 @@ class ClickableJapanese(QTextBrowser):
         self._forms = forms
         self._max_len = max_len
 
-    def set_text(self, text: str) -> None:
+    def set_text(self, text: str, *, align: str = "center", font_pt: int = 22) -> None:
         text = text or ""
         self._tokens = tokenize_japanese(text, self._forms, self._max_len)
         parts: list[str] = []
@@ -53,8 +53,10 @@ class ClickableJapanese(QTextBrowser):
                 )
             else:
                 parts.append(f'<span style="color:#2A1E14;">{esc}</span>')
+        align = align if align in {"center", "left", "right"} else "center"
         self.setHtml(
-            f'<div style="font-size:22pt; line-height:1.55; text-align:center;">{"".join(parts)}</div>'
+            f'<div style="font-size:{font_pt}pt; line-height:1.55; text-align:{align};">'
+            f'{"".join(parts)}</div>'
         )
 
     def clear_text(self) -> None:

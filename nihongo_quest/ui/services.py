@@ -22,6 +22,8 @@ class Selection:
 
 class AppServices(QObject):
     selection_changed = Signal()
+    english_changed = Signal()
+    rail_mode_changed = Signal(str)  # "ja" | "en_ro"
     progress_changed = Signal()
     settings_changed = Signal()
     images_changed = Signal()
@@ -38,6 +40,8 @@ class AppServices(QObject):
         self.apply_voice_settings()
         self.selection = Selection()
         self._selection_history: list[Selection] = []
+        self._english_word = ""
+        self._english_context = ""
 
     def now(self) -> float:
         return time.time()
@@ -75,6 +79,7 @@ class AppServices(QObject):
         else:
             self.selection = Selection(VOCAB, word.key)
         self.selection_changed.emit()
+        self.set_rail_mode("ja")
 
     def select_kanji(self, kanji: Kanji | str | None, *, remember: bool = False) -> None:
         if remember:
@@ -88,6 +93,30 @@ class AppServices(QObject):
         else:
             self.selection = Selection(KANJI, kanji.ch)
         self.selection_changed.emit()
+        self.set_rail_mode("ja")
+
+    def select_english(self, word: str, *, context: str = "") -> None:
+        """Look up an English word/phrase in the EN→RO rail (Immersion helper)."""
+        self._english_word = (word or "").strip()
+        self._english_context = (context or "").strip()
+        self.english_changed.emit()
+        if self._english_word:
+            self.set_rail_mode("en_ro")
+
+    def selected_english(self) -> tuple[str, str]:
+        return self._english_word, self._english_context
+
+    def rail_mode(self) -> str:
+        mode = str(self.progress.setting("rail_mode") or "ja")
+        return mode if mode in {"ja", "en_ro"} else "ja"
+
+    def set_rail_mode(self, mode: str) -> None:
+        mode = mode if mode in {"ja", "en_ro"} else "ja"
+        if self.rail_mode() == mode:
+            self.rail_mode_changed.emit(mode)
+            return
+        self.progress.set_setting("rail_mode", mode)
+        self.rail_mode_changed.emit(mode)
 
     def can_go_back(self) -> bool:
         return bool(self._selection_history)

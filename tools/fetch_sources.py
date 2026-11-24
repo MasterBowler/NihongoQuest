@@ -4,7 +4,7 @@ Only the standard library is used so this can run before any dependency is
 installed. Files that already exist are skipped, so the script is safe to
 re-run; pass --force to download everything again.
 
-Sources (see CREDITS.md for licences):
+Sources (see README.md → Credits for licences and links):
   * JMdict / KANJIDIC2 / KRADFILE  (EDRDG) via scriptin/jmdict-simplified
   * KanjiVG stroke order data      (Ulrich Apel)
   * JLPT word lists                (Jonathan Waller) via stephenmk/yomitan-jlpt-vocab

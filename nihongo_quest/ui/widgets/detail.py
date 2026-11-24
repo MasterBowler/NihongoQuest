@@ -1,16 +1,17 @@
 """Right-rail detail view for the currently selected word or kanji."""
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
-    QFrame, QHBoxLayout, QLabel, QPlainTextEdit, QPushButton, QScrollArea,
+    QCheckBox, QFrame, QHBoxLayout, QLabel, QPlainTextEdit, QPushButton, QScrollArea,
     QSizePolicy, QVBoxLayout, QWidget,
 )
 
 from nihongo_quest.core import conjugate as C
 from nihongo_quest.core import progress as P
 from nihongo_quest.core.content import Kanji, Word
+from nihongo_quest.core.translate import translate_en_batch_to_ro
 from nihongo_quest.ui import theme as T
 from nihongo_quest.ui.services import AppServices
 from nihongo_quest.ui.widgets.furigana import FuriganaLabel
@@ -19,10 +20,29 @@ from nihongo_quest.ui.widgets.pitch import PitchDiagram
 from nihongo_quest.ui.widgets.stroke_canvas import StrokeCanvas
 
 
+class _RoGlossWorker(QThread):
+    finished_ok = Signal(object)  # dict[str, str]
+    finished_err = Signal(str)
+
+    def __init__(self, texts: list[str], token: int, parent=None) -> None:
+        super().__init__(parent)
+        self.texts = texts
+        self.token = token
+
+    def run(self) -> None:
+        try:
+            self.finished_ok.emit(translate_en_batch_to_ro(self.texts))
+        except Exception as exc:  # noqa: BLE001
+            self.finished_err.emit(str(exc))
+
+
 class DetailPane(QWidget):
     def __init__(self, services: AppServices, parent=None) -> None:
         super().__init__(parent)
         self.svc = services
+        self._ro_worker: _RoGlossWorker | None = None
+        self._ro_token = 0
+        self._ro_labels: list[tuple[str, QLabel]] = []
         self.setObjectName("ContextRail")
         self.setMinimumWidth(280)
         self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
@@ -35,6 +55,14 @@ class DetailPane(QWidget):
         title = QLabel("詳 細")
         title.setObjectName("PanelTitle")
         head.addWidget(title, 1)
+        self.ro_toggle = QCheckBox("RO gloss")
+        self.ro_toggle.setToolTip(
+            "Show Romanian under this word’s English JMdict glosses (online MyMemory). "
+            "For clicking English softsub words, use the rail switch EN→RO instead."
+        )
+        self.ro_toggle.setChecked(bool(self.svc.progress.setting("detail_ro_glosses")))
+        self.ro_toggle.toggled.connect(self._on_ro_toggled)
+        head.addWidget(self.ro_toggle)
         self.back_btn = QPushButton("← Back")
         self.back_btn.setToolTip("Return to the previous linked item")
         self.back_btn.clicked.connect(self._go_back)
@@ -66,12 +94,63 @@ class DetailPane(QWidget):
         if self.svc.go_back():
             self.svc.toast.emit("Back.")
 
+    def _on_ro_toggled(self, on: bool) -> None:
+        self.svc.progress.set_setting("detail_ro_glosses", bool(on))
+        self.refresh()
+
     def _clear(self) -> None:
+        self._ro_token += 1
+        self._ro_labels = []
         while self.body_layout.count():
             item = self.body_layout.takeAt(0)
             w = item.widget()
             if w is not None:
                 w.deleteLater()
+
+    def _ro_enabled(self) -> bool:
+        return bool(self.ro_toggle.isChecked())
+
+    def _add_ro_slot(self, en: str) -> QLabel | None:
+        """Placeholder under an English gloss; filled when the RO worker returns."""
+        if not self._ro_enabled() or not (en or "").strip():
+            return None
+        lab = QLabel("…")
+        lab.setWordWrap(True)
+        lab.setStyleSheet(f"color:{T.GOLD_SOFT}; font-size:13px;")
+        self.body_layout.addWidget(lab)
+        self._ro_labels.append((en.strip(), lab))
+        return lab
+
+    def _start_ro_worker(self) -> None:
+        if not self._ro_labels:
+            return
+        texts = [en for en, _ in self._ro_labels]
+        token = self._ro_token
+        if self._ro_worker and self._ro_worker.isRunning():
+            # Previous request is outdated; a new token ignores its result.
+            pass
+        self._ro_worker = _RoGlossWorker(texts, token, self)
+        self._ro_worker.finished_ok.connect(self._on_ro_ready)
+        self._ro_worker.finished_err.connect(self._on_ro_fail)
+        self._ro_worker.start()
+
+    def _on_ro_ready(self, mapping: object) -> None:
+        worker = self.sender()
+        if not isinstance(worker, _RoGlossWorker) or worker.token != self._ro_token:
+            return
+        if not isinstance(mapping, dict):
+            return
+        for en, lab in self._ro_labels:
+            ro = mapping.get(en) or ""
+            lab.setText(ro if ro else "(no RO gloss)")
+
+    def _on_ro_fail(self, message: str) -> None:
+        worker = self.sender()
+        if not isinstance(worker, _RoGlossWorker) or worker.token != self._ro_token:
+            return
+        for _, lab in self._ro_labels:
+            lab.setText("(RO gloss failed)")
+        self.svc.toast.emit(f"EN→RO: {message}")
 
     def refresh(self) -> None:
         self._clear()
@@ -80,8 +159,10 @@ class DetailPane(QWidget):
         kanji = self.svc.selected_kanji()
         if word is not None:
             self._show_word(word)
+            self._start_ro_worker()
         elif kanji is not None:
             self._show_kanji(kanji)
+            self._start_ro_worker()
         else:
             empty = QLabel("Select a word or kanji\nto inspect it here.")
             empty.setAlignment(Qt.AlignCenter)
@@ -116,6 +197,12 @@ class DetailPane(QWidget):
         meaning.setObjectName("WashiMeaning")
         meaning.setWordWrap(True)
         lay.addWidget(meaning)
+        if self._ro_enabled() and w.meaning.strip():
+            ro_slot = QLabel("…")
+            ro_slot.setWordWrap(True)
+            ro_slot.setStyleSheet(f"color:{T.GOLD_SOFT}; font-size:13px;")
+            lay.addWidget(ro_slot)
+            self._ro_labels.append((w.meaning.strip(), ro_slot))
         self.body_layout.addWidget(card)
 
         row = QHBoxLayout()
@@ -152,6 +239,7 @@ class DetailPane(QWidget):
             lab = QLabel(f"{i}. {gloss}")
             lab.setWordWrap(True)
             self.body_layout.addWidget(lab)
+            self._add_ro_slot(gloss)
 
         # kanji breakdown
         if w.all_kanji:
@@ -224,11 +312,14 @@ class DetailPane(QWidget):
         head.setStyleSheet(f"color:{T.WASHI};")
         self.body_layout.addWidget(head)
 
-        meaning = QLabel(" · ".join(k.meanings[:4]) or "(no meaning)")
+        meaning_en = " · ".join(k.meanings[:4]) or "(no meaning)"
+        meaning = QLabel(meaning_en)
         meaning.setAlignment(Qt.AlignCenter)
         meaning.setWordWrap(True)
         meaning.setStyleSheet(f"font-size:16px; color:{T.GOLD_SOFT};")
         self.body_layout.addWidget(meaning)
+        if self._ro_enabled() and k.meanings:
+            self._add_ro_slot(meaning_en)
 
         meta = QLabel(
             f"{k.level_name}  ·  {k.grade_name}  ·  {k.strokes} strokes"

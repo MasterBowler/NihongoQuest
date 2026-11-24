@@ -1,4 +1,4 @@
-"""Immersion hub — Anime (external VLC + softsubs); Manga/Novel placeholders."""
+"""Immersion hub — Anime (VLC + softsubs), Manga (OCR), Novel (text/EPUB)."""
 from __future__ import annotations
 
 import tempfile
@@ -21,7 +21,10 @@ from nihongo_quest.core.immersion.subs import parse_subtitle_file
 from nihongo_quest.core.immersion.tokenize import LexiconMatcher
 from nihongo_quest.core.immersion.vlc_external import ExternalVlc, find_vlc_exe
 from nihongo_quest.ui import theme as T
+from nihongo_quest.ui.panes.immersion_manga import MangaMode
+from nihongo_quest.ui.panes.immersion_novel import NovelMode
 from nihongo_quest.ui.services import AppServices
+from nihongo_quest.ui.widgets.clickable_english import ClickableEnglish
 from nihongo_quest.ui.widgets.clickable_japanese import ClickableJapanese
 
 
@@ -150,6 +153,7 @@ class ImmersionPane(QWidget):
         self._ja_cues: CueTrack | None = None
         self._en_cues: CueTrack | None = None
         self._last_ja = ""
+        self._last_en = ""
         self._selection_jp = ""
         self._probe_worker: _ProbeWorker | None = None
         self._extract_worker: _ExtractWorker | None = None
@@ -171,21 +175,21 @@ class ImmersionPane(QWidget):
         title.setObjectName("SectionTitle")
         head.addWidget(title, 1)
         self.mode_anime = QPushButton("Anime")
-        self.mode_anime.setObjectName("Primary")
         self.mode_manga = QPushButton("Manga")
-        self.mode_manga.setEnabled(False)
-        self.mode_manga.setToolTip("Coming later")
         self.mode_novel = QPushButton("Novel")
-        self.mode_novel.setEnabled(False)
-        self.mode_novel.setToolTip("Coming later")
+        self.mode_anime.clicked.connect(lambda: self._set_mode(0))
+        self.mode_manga.clicked.connect(lambda: self._set_mode(1))
+        self.mode_novel.clicked.connect(lambda: self._set_mode(2))
         for b in (self.mode_anime, self.mode_manga, self.mode_novel):
             head.addWidget(b)
         root.addLayout(head)
 
         self.stack = QStackedWidget()
         root.addWidget(self.stack, 1)
-        self.stack.addWidget(self._build_anime_page())
-        self.stack.setCurrentIndex(0)
+        self.stack.addWidget(self._build_anime_page())          # 0
+        self.stack.addWidget(MangaMode(services, self._matcher))  # 1
+        self.stack.addWidget(NovelMode(services, self._matcher))  # 2
+        self._set_mode(0)
 
         self._tick = QTimer(self)
         self._tick.setInterval(250)
@@ -194,6 +198,17 @@ class ImmersionPane(QWidget):
         self._space = QShortcut(QKeySequence(Qt.Key_Space), self)
         self._space.setContext(Qt.WidgetWithChildrenShortcut)
         self._space.activated.connect(self._toggle_pause)
+
+    def _set_mode(self, index: int) -> None:
+        index = max(0, min(index, self.stack.count() - 1))
+        # Pause anime polling when leaving anime; don't kill VLC (user may keep watching).
+        if index != 0:
+            self.release_for_navigation()
+        self.stack.setCurrentIndex(index)
+        for i, btn in enumerate((self.mode_anime, self.mode_manga, self.mode_novel)):
+            btn.setObjectName("Primary" if i == index else "")
+            btn.style().unpolish(btn)
+            btn.style().polish(btn)
 
     def _ffmpeg_path(self) -> str:
         return str(self.svc.progress.setting("ffmpeg_path") or "")
@@ -281,11 +296,10 @@ class ImmersionPane(QWidget):
         self.romaji_lab.setStyleSheet(f"color:{T.GOLD_SOFT}; font-size:14px;")
         lay.addWidget(self.romaji_lab)
 
-        self.en_lab = QLabel()
-        self.en_lab.setAlignment(Qt.AlignCenter)
-        self.en_lab.setWordWrap(True)
-        self.en_lab.setStyleSheet(f"color:{T.FOG}; font-size:15px;")
-        lay.addWidget(self.en_lab)
+        self.en_view = ClickableEnglish()
+        self.en_view.word_clicked.connect(self._on_en_word)
+        self.en_view.phrase_selected.connect(self._on_en_phrase)
+        lay.addWidget(self.en_view)
 
         actions = QHBoxLayout()
         self.save_btn = QPushButton("Save phrase")
@@ -336,13 +350,15 @@ class ImmersionPane(QWidget):
         self._ja_cues = None
         self._en_cues = None
         self._last_ja = ""
+        self._last_en = ""
         self.jp_view.clear_text()
         self.romaji_lab.clear()
-        self.en_lab.clear()
+        self.en_view.clear_text()
         self.ja_box.blockSignals(True)
         self.en_box.blockSignals(True)
         self.ja_box.clear()
         self.en_box.clear()
+        self.ja_box.addItem("(none)", None)
         self.en_box.addItem("(none)", None)
         self.ja_box.blockSignals(False)
         self.en_box.blockSignals(False)
@@ -394,22 +410,26 @@ class ImmersionPane(QWidget):
         self.en_box.blockSignals(True)
         self.ja_box.clear()
         self.en_box.clear()
+        self.ja_box.addItem("(none)", None)
         self.en_box.addItem("(none)", None)
-        ja_idx = 0
+        ja_idx = 0  # (none) unless a Japanese track is found
         en_idx = 0
         for i, t in enumerate(text_tracks):
             self.ja_box.addItem(t.label, t)
             self.en_box.addItem(t.label, t)
             lang = (t.language or "").lower()
             title = (t.title or "").lower()
+            # Combo indices are offset by the leading "(none)" row.
             if lang in {"jpn", "ja", "jp"} or "jap" in title or "japanese" in title:
-                ja_idx = i
+                ja_idx = i + 1
             if lang in {"eng", "en"} or "eng" in title or "english" in title:
                 en_idx = i + 1
-        if self.ja_box.count():
-            self.ja_box.setCurrentIndex(ja_idx)
+        self.ja_box.setCurrentIndex(ja_idx)
         if en_idx:
             self.en_box.setCurrentIndex(en_idx)
+        elif text_tracks and ja_idx == 0:
+            # EN-only (or unlabeled) file: use the first text track as English.
+            self.en_box.setCurrentIndex(1)
         self.ja_box.blockSignals(False)
         self.en_box.blockSignals(False)
         name = self._media_path.name if self._media_path else "video"
@@ -432,7 +452,15 @@ class ImmersionPane(QWidget):
             return
         ja: SubtitleTrack | None = self.ja_box.currentData()
         en: SubtitleTrack | None = self.en_box.currentData()
-        if ja is None and self.ja_box.count() == 0:
+        if ja is None and en is None:
+            self._ja_cues = None
+            self._en_cues = None
+            self._last_ja = ""
+            self._last_en = ""
+            self.jp_view.clear_text()
+            self.romaji_lab.clear()
+            self.en_view.clear_text()
+            self.status.setText("No subtitle tracks selected.")
             return
         self.status.setText("Extracting subtitle tracks…")
         self._extract_worker = _ExtractWorker(
@@ -456,7 +484,7 @@ class ImmersionPane(QWidget):
 
     # ------------------------------------------------------------------ playback
     def _toggle_pause(self) -> None:
-        if not self._vlc.running:
+        if self.stack.currentIndex() != 0 or not self._vlc.running:
             return
         self._vlc.toggle_pause()
 
@@ -475,6 +503,7 @@ class ImmersionPane(QWidget):
         self._ja_cues = None
         self._en_cues = None
         self._last_ja = ""
+        self._last_en = ""
         self._duration_ms = 0
         self._position_ms = 0
         self._playing = False
@@ -482,7 +511,7 @@ class ImmersionPane(QWidget):
         self.time_lab.setText("0:00 / 0:00")
         self.jp_view.clear_text()
         self.romaji_lab.clear()
-        self.en_lab.clear()
+        self.en_view.clear_text()
         self.play_btn.setEnabled(False)
         self.close_btn.setEnabled(False)
         self.stage_hint.setText(
@@ -517,6 +546,7 @@ class ImmersionPane(QWidget):
         ja_cue: Cue | None = self._ja_cues.at(t) if self._ja_cues else None
         en_cue: Cue | None = self._en_cues.at(t) if self._en_cues else None
         ja_text = ja_cue.text if ja_cue else ""
+        en_text = en_cue.text if en_cue else ""
         if ja_text != self._last_ja or force:
             self._last_ja = ja_text
             self._selection_jp = ja_text
@@ -526,10 +556,12 @@ class ImmersionPane(QWidget):
             else:
                 self.jp_view.clear_text()
                 self.romaji_lab.clear()
-        if en_cue:
-            self.en_lab.setText(en_cue.text)
-        elif not ja_text:
-            self.en_lab.clear()
+        if en_text != self._last_en or force:
+            self._last_en = en_text
+            if en_text:
+                self.en_view.set_text(en_text)
+            else:
+                self.en_view.clear_text()
 
     # ------------------------------------------------------------------ lexicon / phrases
     def _on_word(self, word) -> None:
@@ -543,12 +575,20 @@ class ImmersionPane(QWidget):
         if hit is not None:
             self.svc.select_word(hit)
 
+    def _on_en_word(self, word: str) -> None:
+        self.svc.select_english(word, context=self.en_view.text())
+
+    def _on_en_phrase(self, text: str) -> None:
+        phrase = (text or "").strip()
+        if phrase:
+            self.svc.select_english(phrase, context=self.en_view.text())
+
     def _save_phrase(self) -> None:
         jp = (self.jp_view.selected_phrase() or self._selection_jp or self._last_ja).strip()
         if not jp:
             self.svc.toast.emit("Nothing to save.")
             return
-        en = self.en_lab.text().strip()
+        en = self.en_view.text().strip()
         name = self._media_path.name if self._media_path else "video"
         source = f"anime:{name}@{_format_ms(self._position_ms)}"
         reading = ""
@@ -591,7 +631,7 @@ class ImmersionPane(QWidget):
         self._translate_worker.start()
 
     def _on_translated(self, en: str) -> None:
-        self.en_lab.setText(en)
+        self.en_view.set_text(en)
         self.status.setText("LM Studio translation filled (draft).")
         self.svc.toast.emit("Translated.")
 
