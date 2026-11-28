@@ -163,9 +163,10 @@ class HomePane(QWidget):
 
         v = prog.counts(P.VOCAB, now)
         k = prog.counts(P.KANJI, now)
+        ph = prog.counts(P.PHRASE, now)
         self.stat_widgets["streak"].setText(str(prog.streak(now)))
-        self.stat_widgets["due"].setText(str(v["review"] + k["review"]))
-        self.stat_widgets["new"].setText(str(v["new"] + k["new"]))
+        self.stat_widgets["due"].setText(str(v["review"] + k["review"] + ph["review"]))
+        self.stat_widgets["new"].setText(str(v["new"] + k["new"] + ph["new"]))
         self.stat_widgets["xp"].setText(str(info["xp"]))
 
         done, goal = prog.goal_progress(now)

@@ -4,9 +4,9 @@ from __future__ import annotations
 from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtGui import QGuiApplication, QImage, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
-    QFileDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget,
-    QListWidgetItem, QMessageBox, QPlainTextEdit, QPushButton, QSizePolicy,
-    QSplitter, QVBoxLayout, QWidget,
+    QApplication, QFileDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit,
+    QListWidget, QListWidgetItem, QMessageBox, QPlainTextEdit, QPushButton,
+    QSizePolicy, QSplitter, QVBoxLayout, QWidget,
 )
 
 from nihongo_quest.core import kana as K
@@ -283,24 +283,41 @@ class PhrasesPane(QWidget):
         self.svc.toast.emit("Phrase deleted.")
 
     # ------------------------------------------------------------------ OCR / paste
-    def paste_image(self) -> None:
+    def _clipboard_image(self) -> QImage:
         clip = QGuiApplication.clipboard()
-        if clip is None:
-            return
-        mime = clip.mimeData()
         image = QImage()
-        if mime is not None and mime.hasImage():
+        if clip is None:
+            return image
+        mime = clip.mimeData()
+        if mime is None:
+            return image
+        if mime.hasImage():
             image = QImage(clip.image())
-        elif mime is not None and mime.hasUrls():
+        if image.isNull() and mime.hasUrls():
             for url in mime.urls():
                 if url.isLocalFile():
                     image = QImage(url.toLocalFile())
                     if not image.isNull():
                         break
-        if image.isNull():
-            self.svc.toast.emit("Clipboard has no image.")
+        return image
+
+    def paste_image(self) -> None:
+        """Ctrl+V: OCR a screenshot, or paste text into the field that has focus."""
+        image = self._clipboard_image()
+        if not image.isNull():
+            self._run_ocr(image)
             return
-        self._run_ocr(image)
+        clip = QGuiApplication.clipboard()
+        mime = clip.mimeData() if clip is not None else None
+        focus = QApplication.focusWidget()
+        if mime is not None and mime.hasText() and isinstance(focus, (QLineEdit, QPlainTextEdit)):
+            text = mime.text()
+            if isinstance(focus, QPlainTextEdit):
+                focus.insertPlainText(text)
+            else:
+                focus.insert(text)
+            return
+        self.svc.toast.emit("Clipboard has no image.")
 
     def _pick_image(self) -> None:
         path, _ = QFileDialog.getOpenFileName(

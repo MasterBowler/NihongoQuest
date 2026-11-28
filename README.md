@@ -54,7 +54,7 @@ Zip the entire `dist\NihongoQuest` folder for a GitHub Release. Learner data is 
 | F11 | Toggle fullscreen |
 | F2 | Toggle magnifier loupe |
 | Ctrl + / − / 0 | UI zoom in / out / reset |
-| Esc | Close loupe / leave study / exit fullscreen |
+| Esc | Close loupe, then leave study, then exit fullscreen, then quit |
 | Space | Reveal / Good / continue lesson (Anime: pause/resume VLC) |
 | 1–4 | Again / Hard / Good / Easy |
 | R | Replay audio |

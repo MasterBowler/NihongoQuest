@@ -3,11 +3,11 @@ from __future__ import annotations
 
 import time
 
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QKeySequence, QPixmap, QShortcut
+from PySide6.QtCore import QEvent, Qt, Signal
+from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
-    QFrame, QHBoxLayout, QLabel, QLineEdit, QProgressBar, QPushButton,
-    QSizePolicy, QVBoxLayout, QWidget,
+    QApplication, QFrame, QHBoxLayout, QLabel, QLineEdit, QPlainTextEdit,
+    QProgressBar, QPushButton, QSizePolicy, QTextEdit, QVBoxLayout, QWidget,
 )
 
 from nihongo_quest.core import progress as P
@@ -34,7 +34,9 @@ class StudyPane(QWidget):
         self._revealed = False
         self._started_ms = 0
         self._awaiting_write = False
+        self._keys_installed = False
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.setFocusPolicy(Qt.StrongFocus)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(16, 12, 16, 12)
@@ -147,6 +149,7 @@ class StudyPane(QWidget):
         self.reveal_btn.setObjectName("Primary")
         self.reveal_btn.setMinimumHeight(52)
         self.reveal_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.reveal_btn.setFocusPolicy(Qt.NoFocus)
         self.reveal_btn.clicked.connect(self.reveal)
         self.actions.addWidget(self.reveal_btn, 2)
 
@@ -154,10 +157,12 @@ class StudyPane(QWidget):
         self.lesson_next.setObjectName("Primary")
         self.lesson_next.setMinimumHeight(52)
         self.lesson_next.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.lesson_next.setFocusPolicy(Qt.NoFocus)
         self.lesson_next.clicked.connect(lambda: self._finish_lesson(False))
         self.lesson_known = QPushButton("Already know")
         self.lesson_known.setMinimumHeight(52)
         self.lesson_known.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.lesson_known.setFocusPolicy(Qt.NoFocus)
         self.lesson_known.clicked.connect(lambda: self._finish_lesson(True))
         self.actions.addWidget(self.lesson_next, 2)
         self.actions.addWidget(self.lesson_known, 1)
@@ -173,22 +178,19 @@ class StudyPane(QWidget):
             btn.setObjectName(obj)
             btn.setMinimumHeight(52)
             btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            btn.setFocusPolicy(Qt.NoFocus)
+            btn.setAutoDefault(False)
             btn.clicked.connect(lambda _=False, r=rating: self.grade(r))
             self.grade_btns[rating] = btn
             self.actions.addWidget(btn, 1)
 
         self.speak_btn = QPushButton("♪")
         self.speak_btn.setFixedSize(52, 52)
+        self.speak_btn.setFocusPolicy(Qt.NoFocus)
         self.speak_btn.clicked.connect(self._speak_current)
         self.actions.addWidget(self.speak_btn)
         root.addLayout(self.actions)
-
-        QShortcut(QKeySequence(Qt.Key_Space), self, self._space)
-        QShortcut(QKeySequence(Qt.Key_1), self, lambda: self.grade(srs.AGAIN))
-        QShortcut(QKeySequence(Qt.Key_2), self, lambda: self.grade(srs.HARD))
-        QShortcut(QKeySequence(Qt.Key_3), self, lambda: self.grade(srs.GOOD))
-        QShortcut(QKeySequence(Qt.Key_4), self, lambda: self.grade(srs.EASY))
-        QShortcut(QKeySequence(Qt.Key_R), self, self._speak_current)
+        self.replay_btn.setFocusPolicy(Qt.NoFocus)
 
         self._set_grades_visible(False)
         self._set_lesson_visible(False)
@@ -198,6 +200,68 @@ class StudyPane(QWidget):
         self.bar.setMaximum(max(self.session.total, 1))
         self.bar.setValue(0)
         self._next()
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        app = QApplication.instance()
+        if app is not None and not self._keys_installed:
+            app.installEventFilter(self)
+            self._keys_installed = True
+
+    def hideEvent(self, event) -> None:  # noqa: N802
+        self._remove_keys()
+        super().hideEvent(event)
+
+    def _remove_keys(self) -> None:
+        if not self._keys_installed:
+            return
+        app = QApplication.instance()
+        if app is not None:
+            app.removeEventFilter(self)
+        self._keys_installed = False
+
+    def _typing_answer(self) -> bool:
+        return self.type_input.isVisible() and QApplication.focusWidget() is self.type_input
+
+    def eventFilter(self, obj, event) -> bool:  # noqa: N802
+        """1–4 / Space / R work even when a grade button would otherwise take the key.
+
+        The answer box still receives characters until the card is revealed.
+        Notes and other text fields keep their keys. Space still reveals.
+        """
+        if event.type() != QEvent.KeyPress or not self.isVisible():
+            return False
+        app = QApplication.instance()
+        if app is not None and (
+            app.activeModalWidget() is not None or app.activePopupWidget() is not None
+        ):
+            return False
+        key = event.key()
+        handled = {
+            Qt.Key_Space, Qt.Key_1, Qt.Key_2, Qt.Key_3, Qt.Key_4, Qt.Key_R,
+        }
+        if key not in handled:
+            return False
+        focus = QApplication.focusWidget()
+        if isinstance(focus, (QLineEdit, QPlainTextEdit, QTextEdit)) and focus is not self.type_input:
+            return False
+        if self._typing_answer() and not self._revealed and key != Qt.Key_Space:
+            return False
+        if event.isAutoRepeat():
+            return True
+        if key == Qt.Key_Space:
+            self._space()
+        elif key == Qt.Key_1:
+            self.grade(srs.AGAIN)
+        elif key == Qt.Key_2:
+            self.grade(srs.HARD)
+        elif key == Qt.Key_3:
+            self.grade(srs.GOOD)
+        elif key == Qt.Key_4:
+            self.grade(srs.EASY)
+        else:
+            self._speak_current()
+        return True
 
     def _show_canvas(self, on: bool, *, replay: bool = False) -> None:
         self.canvas_wrap.setVisible(on)
@@ -211,9 +275,20 @@ class StudyPane(QWidget):
     def _want_detail(self, on: bool) -> None:
         self.detail_wanted.emit(on)
 
+    def _prompt_missing(self, prompt) -> bool:
+        if prompt.kind == P.VOCAB:
+            return self.svc.content.word_by_key(prompt.item) is None
+        if prompt.kind == P.PHRASE:
+            return self.svc.progress.phrases.get(prompt.item) is None
+        return self.svc.content.kanji(prompt.item) is None
+
     def _next(self) -> None:
         assert self.session is not None
-        prompt = self.session.next()
+        while True:
+            prompt = self.session.next()
+            if prompt is None or not self._prompt_missing(prompt):
+                break
+            self.session.skip()
         self._revealed = False
         self._awaiting_write = False
         self._started_ms = int(time.time() * 1000)
@@ -228,7 +303,9 @@ class StudyPane(QWidget):
         self.remain.setText(f"new {rem['new']} · learning {rem['learning']} · review {rem['review']}")
         self.combo.setText(f"×{self.session.stats.combo}" if self.session.stats.combo else "")
         done = self.session.stats.answered + self.session.stats.lessons
-        self.bar.setValue(min(done, self.bar.maximum()))
+        left = rem["new"] + rem["learning"] + rem["review"]
+        self.bar.setMaximum(max(done + left, 1))
+        self.bar.setValue(done)
 
         if prompt is None:
             self._show_summary()
@@ -236,16 +313,19 @@ class StudyPane(QWidget):
 
         if prompt.kind == P.VOCAB:
             word = self.svc.content.word_by_key(prompt.item)
-            assert word is not None
+            if word is None:
+                return
             self.svc.select_word(word)
             self._show_vocab(word, prompt.mode)
         elif prompt.kind == P.PHRASE:
             phrase = self.svc.progress.phrases.get(prompt.item)
-            assert phrase is not None
+            if phrase is None:
+                return
             self._show_phrase(phrase, prompt.mode)
         else:
             kanji = self.svc.content.kanji(prompt.item)
-            assert kanji is not None
+            if kanji is None:
+                return
             self.svc.select_kanji(kanji)
             self._show_kanji(kanji, prompt.mode)
 
@@ -401,7 +481,8 @@ class StudyPane(QWidget):
 
         if prompt.kind == P.VOCAB:
             w = self.svc.content.word_by_key(prompt.item)
-            assert w is not None
+            if w is None:
+                return
             if w.furi and self.svc.progress.setting("furigana"):
                 self.prompt.set_segments([(a, b) for a, b in w.furi])
             else:
@@ -418,7 +499,8 @@ class StudyPane(QWidget):
                 self.svc.speak_word(w)
         elif prompt.kind == P.PHRASE:
             p = self.svc.progress.phrases.get(prompt.item)
-            assert p is not None
+            if p is None:
+                return
             self.prompt.show()
             self.prompt.set_plain(p.jp)
             reading = p.reading or ""
@@ -430,7 +512,8 @@ class StudyPane(QWidget):
                 self.svc.speak_text(p.jp)
         else:
             k = self.svc.content.kanji(prompt.item)
-            assert k is not None
+            if k is None:
+                return
             self.prompt.show()
             self.prompt.set_plain(k.ch)
             self.sub.setText(" · ".join(k.meanings[:4]))
@@ -562,7 +645,7 @@ class StudyPane(QWidget):
         self._set_grades_visible(False)
         self._want_detail(False)
         self.lesson_known.hide()
-        self.lesson_next.setText("Back to dojo")
+        self.lesson_next.setText("Back to phrases" if self.kind == P.PHRASE else "Back to dojo")
         self.lesson_next.show()
         try:
             self.lesson_next.clicked.disconnect()

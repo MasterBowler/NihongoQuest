@@ -9,7 +9,7 @@ from nihongo_quest.core import srs
 from nihongo_quest.core.content import Content
 from nihongo_quest.core.progress import KANJI, KNOWN, SUSPENDED, VOCAB, Progress
 from nihongo_quest.core.session import StudySession
-from nihongo_quest.core.srs import AGAIN, EASY, GOOD, CardState
+from nihongo_quest.core.srs import AGAIN, EASY, GOOD, HARD, CardState
 from nihongo_quest.paths import CONTENT_DB
 
 NOON = datetime(2026, 1, 15, 12, 0).timestamp()
@@ -385,6 +385,56 @@ class Sessions(Base):
         self.assertTrue(s.done())
         self.assertIsNone(s.next())
         self.assertEqual(self.p.card(VOCAB, w.key).s.lapses, 1)
+
+    def test_again_does_not_repeat_while_other_reviews_remain(self):
+        """Three due cards: Again must not show the same item next."""
+        words = self.content.words[:3]
+        for w in words:
+            self.make_review(VOCAB, w.key, NOON - DAY)
+        self.p.set_setting("new_vocab_per_day", 0)
+        s = self.session()
+        first = s.next().item
+        self.assertEqual(s.preview()[AGAIN], "10m")
+        s.answer(AGAIN)
+        nxt = s.next()
+        self.assertIsNotNone(nxt)
+        self.assertNotEqual(nxt.item, first)
+        s.answer(GOOD)
+        third = s.next()
+        self.assertIsNotNone(third)
+        self.assertNotEqual(third.item, first)
+        s.answer(GOOD)
+        back = s.next()
+        self.assertIsNotNone(back)
+        self.assertEqual(back.item, first)                   # returns once the others are done
+
+    def test_again_and_hard_do_not_jump_ahead_of_later_cards(self):
+        """1m Again / 5m Hard stay behind siblings that are still in the queue.
+
+        The rescheduled due time is sooner than the other cards, which is the
+        case that used to show the same card again immediately.
+        """
+        words = self.content.words[:3]
+        for rating, step in ((AGAIN, "1m"), (HARD, "5m")):
+            for i, w in enumerate(words):
+                due = NOON + (30 if i == 0 else 600 + 60 * i)
+                state = CardState(
+                    state=srs.LEARNING, due=due, stability=3.0, difficulty=5.0,
+                    reps=1, last_review=NOON - 60, scheduled_days=0,
+                )
+                self.p._save(P.Card(VOCAB, w.key, state, created=NOON - 120))
+            self.p.set_setting("new_vocab_per_day", 0)
+            s = self.session()
+            first = s.next()
+            self.assertEqual(first.item, words[0].key)
+            self.assertEqual(s.preview()[rating], step)
+            s.answer(rating)
+            nxt = s.next()
+            self.assertIsNotNone(nxt)
+            self.assertNotEqual(nxt.item, first.item)
+            # Fresh queue for the other grade.
+            for w in words:
+                self.p.forget(VOCAB, w.key)
 
     def test_known_lesson_and_skip(self):
         self.p.set_setting("new_vocab_per_day", 2)

@@ -7,6 +7,11 @@ Order of play
   3. due reviews, most-forgotten first,
   4. whatever is still waiting on a learning step ("learn ahead"), so a
      session always ends with nothing left hanging.
+
+Again (1 minute) and Hard (5 minutes) keep the card in a short step. That
+card is not shown next while anything else is still queued. It may return
+once the step is due and another card has been seen, or at the end of the
+queue when it is the only card left. The stored FSRS due time is unchanged.
 """
 from __future__ import annotations
 
@@ -73,6 +78,10 @@ class StudySession:
         self.current: Prompt | None = None
         self.stats = SessionStats(started=t, xp_at_start=progress.xp)
         self.total = len(self.reviews) + len(self.new) + len(self.learning)
+        # Items graded Again/Hard that must not be the next card while siblings remain.
+        self._buried: set[str] = set()
+        self._buried_seen: set[str] = set()   # buried items for which another card was shown
+        self._just_buried: str | None = None
 
     # ------------------------------------------------------------------ queue
     def remaining(self) -> dict[str, int]:
@@ -81,24 +90,84 @@ class StudySession:
     def done(self) -> bool:
         return not (self.new or self.learning or self.reviews)
 
+    def _has_other(self, item: str) -> bool:
+        if any(x != item for x in self.new):
+            return True
+        if any(c.item != item for c in self.reviews):
+            return True
+        return any(k != item for k in self.learning)
+
+    def _release_bury(self, item: str) -> None:
+        self._buried.discard(item)
+        self._buried_seen.discard(item)
+        if self._just_buried == item:
+            self._just_buried = None
+
+    def _bury_block(self, t: float) -> set[str]:
+        """Cards that must not be chosen yet.
+
+        A buried card stays out of the way while siblings remain, unless its
+        learning step is actually due and some other card has already been seen.
+        """
+        blocked: set[str] = set()
+        for item in self._buried:
+            if not self._has_other(item):
+                continue
+            card = self.learning.get(item)
+            if card is not None and card.s.due <= t and item in self._buried_seen:
+                continue
+            blocked.add(item)
+        return blocked
+
+    def _choose(self, t: float, skip: set[str]) -> Prompt | None:
+        waiting = sorted(self.learning.values(), key=lambda c: c.s.due)
+        due = [c for c in waiting if c.s.due <= t and c.item not in skip]
+        fresh_all = [c for c in waiting if c.s.state == srs.NEW]
+        fresh = [c for c in fresh_all if c.item not in skip]
+        reviews = [c for c in self.reviews if c.item not in skip]
+        new = [item for item in self.new if item not in skip]
+        waiting_ok = [c for c in waiting if c.item not in skip]
+        if due:
+            return self._quiz(due[0])
+        if len(fresh_all) >= self.WAITING_CAP and fresh:
+            return self._quiz(fresh[0])
+        # Lesson spacing still looks at the real review queue, not the filtered one.
+        if new and (not self.reviews or self._since_lesson >= self._gap):
+            return Prompt(self.kind, new[0], LESSON)
+        if reviews:
+            return self._quiz(reviews[0])
+        if waiting_ok:
+            return self._quiz(waiting_ok[0])
+        return None
+
+    def _observe(self, prompt: Prompt | None, fallback: bool) -> None:
+        if prompt is None:
+            return
+        if prompt.item not in self._buried:
+            self._buried_seen.update(self._buried)
+            self._just_buried = None
+            return
+        if fallback:
+            # Rotated onto another held card at the end of the ready queue.
+            # Keep it held so the one we just failed is not shown again immediately.
+            self._buried_seen.update(self._buried - {prompt.item})
+            self._just_buried = prompt.item
+            return
+        self._release_bury(prompt.item)
+
     def next(self) -> Prompt | None:
         """Choose the next prompt (None when the session is finished)."""
         t = self.now()
-        waiting = sorted(self.learning.values(), key=lambda c: c.s.due)
-        due = [c for c in waiting if c.s.due <= t]
-        fresh = [c for c in waiting if c.s.state == srs.NEW]
-        if due:
-            prompt = self._quiz(due[0])
-        elif len(fresh) >= self.WAITING_CAP:
-            prompt = self._quiz(fresh[0])
-        elif self.new and (not self.reviews or self._since_lesson >= self._gap):
-            prompt = Prompt(self.kind, self.new[0], LESSON)
-        elif self.reviews:
-            prompt = self._quiz(self.reviews[0])
-        elif waiting:
-            prompt = self._quiz(waiting[0])
-        else:
-            prompt = None
+        blocked = self._bury_block(t)
+        prompt = self._choose(t, blocked)
+        fallback = False
+        if prompt is None and blocked:
+            fallback = True
+            avoid = {self._just_buried} if self._just_buried else set()
+            prompt = self._choose(t, avoid)
+            if prompt is None:
+                prompt = self._choose(t, set())
+        self._observe(prompt, fallback)
         self.current = prompt
         return prompt
 
@@ -157,8 +226,16 @@ class StudySession:
             self._since_lesson += 1
         if card.s.state == srs.REVIEW:
             self.learning.pop(card.item, None)
+            self._release_bury(card.item)
         else:
             self.learning[card.item] = card
+            # 1m Again / 5m Hard: do not make this the next card while siblings remain.
+            if rating in (srs.AGAIN, srs.HARD) and self._has_other(card.item):
+                self._buried.add(card.item)
+                self._buried_seen.discard(card.item)
+                self._just_buried = card.item
+            else:
+                self._release_bury(card.item)
         st = self.stats
         st.answered += 1
         st.results.append((card.item, rating))
@@ -186,6 +263,7 @@ class StudySession:
             if prompt.card in self.reviews:
                 self.reviews.remove(prompt.card)
             self.learning.pop(prompt.item, None)
+        self._release_bury(prompt.item)
         self.current = None
 
     @property

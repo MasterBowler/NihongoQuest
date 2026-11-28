@@ -1,7 +1,7 @@
 """Fullscreen shell: top bar, nav rail, main stage, resizable context pane."""
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QEvent, Qt, QTimer
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication, QHBoxLayout, QLabel, QMainWindow, QPushButton, QSizePolicy,
@@ -94,7 +94,6 @@ class MainWindow(QMainWindow):
         self.loupe.set_factor(float(self.svc.progress.setting("loupe_factor")))
 
         QShortcut(QKeySequence(Qt.Key_F11), self, self.toggle_fullscreen)
-        QShortcut(QKeySequence(Qt.Key_Escape), self, self._escape)
         QShortcut(QKeySequence(Qt.Key_F2), self, self.loupe.toggle)
         QShortcut(QKeySequence.ZoomIn, self, lambda: self.adjust_zoom(0.05))
         QShortcut(QKeySequence.ZoomOut, self, lambda: self.adjust_zoom(-0.05))
@@ -102,6 +101,9 @@ class MainWindow(QMainWindow):
         # Extra bindings common on Windows keyboards
         QShortcut(QKeySequence("Ctrl+="), self, lambda: self.adjust_zoom(0.05))
         QShortcut(QKeySequence("Ctrl+-"), self, lambda: self.adjust_zoom(-0.05))
+        app = QApplication.instance()
+        if app is not None:
+            app.installEventFilter(self)
 
         self.svc.progress_changed.connect(self._refresh_top)
         self.svc.selection_changed.connect(self._sync_detail)
@@ -168,7 +170,7 @@ class MainWindow(QMainWindow):
             nl.addWidget(btn)
             self.nav_btns[key] = btn
         nl.addStretch(1)
-        hint = QLabel("F11 fullscreen\nF2 magnifier\nCtrl± zoom\nEsc leave study")
+        hint = QLabel("F11 fullscreen\nF2 magnifier\nCtrl± zoom\nEsc loupe, study,\nfullscreen, quit")
         hint.setStyleSheet(f"color:{T.FOG_DIM}; font-size:11px; padding:6px;")
         nl.addWidget(hint)
         self.splitter.addWidget(nav)
@@ -316,8 +318,9 @@ class MainWindow(QMainWindow):
         info = prog.level_info()
         v = prog.counts(P.VOCAB, now)
         k = prog.counts(P.KANJI, now)
+        ph = prog.counts(P.PHRASE, now)
         self.streak_lab.setText(f"連続 {prog.streak(now)}日")
-        self.due_lab.setText(f"復習 {v['review'] + k['review']}")
+        self.due_lab.setText(f"復習 {v['review'] + k['review'] + ph['review']}")
         self.xp_lab.setText(f"Lv.{info['level']}  {info['xp']} XP")
 
     def _toast(self, text: str) -> None:
@@ -357,28 +360,68 @@ class MainWindow(QMainWindow):
         else:
             self.showFullScreen()
 
+    def _in_study(self) -> bool:
+        return self.stack.currentWidget() in (
+            self._study_vocab, self._study_kanji, self._study_phrase,
+        )
+
+    def _leave_study(self) -> None:
+        page = "phrases" if self.stack.currentWidget() is self._study_phrase else "home"
+        self.show_page(page)
+
     def _escape(self) -> None:
+        """Loupe, then leave study, then exit fullscreen, then quit.
+
+        Modal dialogs and popups keep Escape (they close themselves).
+        Immersion does not consume it.
+        """
+        app = QApplication.instance()
+        if app is not None and (
+            app.activeModalWidget() is not None or app.activePopupWidget() is not None
+        ):
+            return
         if self.loupe.active:
             self.loupe.stop()
             return
-        if self._page == "immersion":
-            immersion = self.pages.get("immersion")
-            force = getattr(immersion, "_force_release_embed", None)
-            if callable(force):
-                force()
-            self.show_page("home")
+        if self._in_study():
+            self._leave_study()
             return
-        if self.stack.currentWidget() in (self._study_vocab, self._study_kanji, self._study_phrase):
-            page = "phrases" if self.stack.currentWidget() is self._study_phrase else "home"
-            self.show_page(page)
-        elif self.isFullScreen():
+        if self.isFullScreen():
             self.showNormal()
+            return
+        self.close()
+
+    def eventFilter(self, obj, event) -> bool:  # noqa: N802
+        if (
+            event.type() == QEvent.KeyPress
+            and event.key() == Qt.Key_Escape
+            and not event.isAutoRepeat()
+        ):
+            app = QApplication.instance()
+            if app is not None and (
+                app.activeModalWidget() is not None or app.activePopupWidget() is not None
+            ):
+                return False
+            active = app.activeWindow() if app is not None else None
+            if active is not None and active is not self and active is not self.loupe:
+                return False
+            self._escape()
+            return True
+        return super().eventFilter(obj, event)
 
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)
         self.petals.setGeometry(self.centralWidget().rect())
 
     def closeEvent(self, event) -> None:  # noqa: N802
+        app = QApplication.instance()
+        if app is not None:
+            app.removeEventFilter(self)
         self.loupe.stop()
+        immersion = self.pages.get("immersion")
+        if immersion is not None and getattr(immersion, "_media_path", None) is not None:
+            close_video = getattr(immersion, "_close_video", None)
+            if callable(close_video):
+                close_video()
         self.svc.close()
         super().closeEvent(event)

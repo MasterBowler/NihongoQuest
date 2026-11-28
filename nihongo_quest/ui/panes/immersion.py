@@ -197,6 +197,7 @@ class ImmersionPane(QWidget):
 
         self._space = QShortcut(QKeySequence(Qt.Key_Space), self)
         self._space.setContext(Qt.WidgetWithChildrenShortcut)
+        self._space.setAutoRepeat(False)
         self._space.activated.connect(self._toggle_pause)
 
     def _set_mode(self, index: int) -> None:
@@ -205,6 +206,10 @@ class ImmersionPane(QWidget):
         if index != 0:
             self.release_for_navigation()
         self.stack.setCurrentIndex(index)
+        space = getattr(self, "_space", None)
+        if space is not None:
+            # Space pauses anime only while that mode is showing and focused.
+            space.setEnabled(index == 0)
         for i, btn in enumerate((self.mode_anime, self.mode_manga, self.mode_novel)):
             btn.setObjectName("Primary" if i == index else "")
             btn.style().unpolish(btn)

@@ -70,7 +70,7 @@ class StatsPane(QWidget):
         hist_card = QFrame()
         hist_card.setObjectName("Card")
         hl = QVBoxLayout(hist_card)
-        hl.addWidget(self._h("Last 14 days — reviews"))
+        hl.addWidget(self._h("Last 14 days — cards"))
         self.hist = BarChart()
         hl.addWidget(self.hist)
         row.addWidget(hist_card, 1)
@@ -117,9 +117,13 @@ class StatsPane(QWidget):
         )
 
         history = prog.history(14, now)
+        last = len(history) - 1
         self.hist.set_data(
-            [d["reviews"] + d["new_vocab"] + d["new_kanji"] for d in history],
-            [str(i - 13) if i else "今日" for i in range(14)],
+            [
+                d["reviews"] + d["new_vocab"] + d["new_kanji"] + int(d.get("new_phrase") or 0)
+                for d in history
+            ],
+            ["今日" if i == last else str(i - last) for i in range(len(history))],
         )
         forecast = prog.forecast(14, now)
         self.forecast.set_data(forecast, [str(i) if i else "今日" for i in range(14)])

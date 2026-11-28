@@ -51,8 +51,10 @@ class LexiconPane(QWidget):
         self.svc.images_changed.connect(self._refilter)
         self._refilter()
 
-        QShortcut(QKeySequence(Qt.Key_Left), self, self._browse_prev)
-        QShortcut(QKeySequence(Qt.Key_Right), self, self._browse_next)
+        self._prev_sc = QShortcut(QKeySequence(Qt.Key_Left), self, self._browse_prev)
+        self._next_sc = QShortcut(QKeySequence(Qt.Key_Right), self, self._browse_next)
+        self._prev_sc.setEnabled(False)
+        self._next_sc.setEnabled(False)
         QShortcut(QKeySequence(Qt.Key_Return), self, self._open_selected)
         QShortcut(QKeySequence(Qt.Key_Enter), self, self._open_selected)
 
@@ -272,14 +274,20 @@ class LexiconPane(QWidget):
             return
         self._show_browse_at(row)
         self.stack.setCurrentIndex(1)
+        self._set_browse_keys(True)
 
     def _back_to_list(self) -> None:
         if self.stack.currentIndex() == 0:
             return
         self.stack.setCurrentIndex(0)
+        self._set_browse_keys(False)
         if 0 <= self._browse_index < self.list.count():
             self.list.setCurrentRow(self._browse_index)
             self.list.scrollToItem(self.list.item(self._browse_index))
+
+    def _set_browse_keys(self, on: bool) -> None:
+        self._prev_sc.setEnabled(on)
+        self._next_sc.setEnabled(on)
 
     def _browse_prev(self) -> None:
         if self.stack.currentIndex() != 1 or not self._filtered:
